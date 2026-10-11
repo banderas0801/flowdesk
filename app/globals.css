@@ -1,0 +1,27 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "../vendor/shadcn-tailwind-4.13.0.css";
+:root {
+  --background:#f4f6f8; --foreground:#172035; --card:#fff; --card-foreground:#172035;
+  --popover:#fff; --popover-foreground:#172035; --primary:#172035; --primary-foreground:#fff;
+  --secondary:#eef1f5; --secondary-foreground:#172035; --muted:#eef1f5; --muted-foreground:#778092;
+  --accent:#e9edf1; --accent-foreground:#172035; --destructive:#d94d42; --border:#dfe3e8;
+  --input:#dfe3e8; --ring:#6f91ea; --chart-1:#6f91ea; --chart-2:#45a979; --chart-3:#ff806d;
+  --chart-4:#c7f36b; --chart-5:#7b5cc7; --radius:.8rem;
+}
+@theme inline {
+  --color-background:var(--background); --color-foreground:var(--foreground);
+  --color-card:var(--card); --color-card-foreground:var(--card-foreground);
+  --color-popover:var(--popover); --color-popover-foreground:var(--popover-foreground);
+  --color-primary:var(--primary); --color-primary-foreground:var(--primary-foreground);
+  --color-secondary:var(--secondary); --color-secondary-foreground:var(--secondary-foreground);
+  --color-muted:var(--muted); --color-muted-foreground:var(--muted-foreground);
+  --color-accent:var(--accent); --color-accent-foreground:var(--accent-foreground);
+  --color-destructive:var(--destructive); --color-border:var(--border); --color-input:var(--input); --color-ring:var(--ring);
+  --color-chart-1:var(--chart-1); --color-chart-2:var(--chart-2); --color-chart-3:var(--chart-3); --color-chart-4:var(--chart-4); --color-chart-5:var(--chart-5);
+  --radius-sm:calc(var(--radius) - 4px); --radius-md:calc(var(--radius) - 2px); --radius-lg:var(--radius); --radius-xl:calc(var(--radius) + 4px);
+  --font-sans:"Aptos","Segoe UI",Arial,sans-serif;
+}
+*{box-sizing:border-box} body{margin:0;background:var(--background);color:var(--foreground);font-family:"Aptos","Segoe UI",Arial,sans-serif} button,input,textarea,select{font:inherit} button{cursor:pointer}
+.focus-panel::after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(112deg,transparent 52%,rgba(199,243,107,.07))}
+@media(prefers-reduced-motion:no-preference){.focus-panel{animation:rise .45s ease-out both}@keyframes rise{from{opacity:0;transform:translateY(8px)}}}

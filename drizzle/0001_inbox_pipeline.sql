@@ -1,0 +1,10 @@
+ALTER TABLE inbox_items ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';
+ALTER TABLE inbox_items ADD COLUMN content_type TEXT NOT NULL DEFAULT 'text';
+ALTER TABLE inbox_items ADD COLUMN raw_input TEXT;
+ALTER TABLE inbox_items ADD COLUMN telegram_message_id TEXT;
+ALTER TABLE inbox_items ADD COLUMN telegram_chat_id TEXT;
+ALTER TABLE inbox_items ADD COLUMN parsed_json TEXT;
+ALTER TABLE inbox_items ADD COLUMN status TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE inbox_items ADD COLUMN error_message TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_telegram_update ON inbox_items(owner_id, telegram_message_id) WHERE telegram_message_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_inbox_telegram_pending ON inbox_items(owner_id, telegram_chat_id, status, created_at);
