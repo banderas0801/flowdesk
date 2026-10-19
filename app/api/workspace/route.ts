@@ -1,4 +1,5 @@
 import { getRawDb } from "../../../db";
+import { validDay } from "../../../components/flowdesk/task-model";
 import { getChatGPTUser } from "../../chatgpt-auth";
 import { ensureInboxSchema } from "../../lib/telegram-inbox";
 import { addRelation, listRelations, migrateLegacyRelations, removeRelation, syncProjectMembership } from "../../lib/relations";
@@ -20,7 +21,7 @@ const clean = (value: unknown, fallback = "") => typeof value === "string" && va
 const optional = (value: unknown) => clean(value) || null;
 const encode = (value: unknown) => { try { return JSON.stringify(value ?? []); } catch { return "[]"; } };
 async function syncTaskToGoogle(db: D1Database, owner: string, task: { id: string; title: string; description: string; dueAt: string | null; status: string }) {
-  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !task.dueAt) return;
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) return;
   try {
     await ensureGoogleCalendarSchema(db);
     const connection = await db.prepare("SELECT owner_id, calendar_id, access_token, refresh_token, token_expires_at FROM google_calendar_connections WHERE owner_id = ? LIMIT 1").bind(owner).first<{ owner_id: string; calendar_id: string; access_token: string | null; refresh_token: string | null; token_expires_at: string | null }>();
@@ -35,7 +36,7 @@ async function syncTaskToGoogle(db: D1Database, owner: string, task: { id: strin
     }
     if (!token) return;
     const existing = await db.prepare("SELECT google_event_id FROM google_calendar_sync WHERE owner_id = ? AND task_id = ? LIMIT 1").bind(owner, task.id).first<{ google_event_id: string }>();
-    if (task.status === "done") {
+    if (task.status === "done" || !task.dueAt) {
       if (existing?.google_event_id && token) await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(connection.calendar_id || "primary")}/events/${encodeURIComponent(existing.google_event_id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
       await db.prepare("DELETE FROM google_calendar_sync WHERE owner_id = ? AND task_id = ?").bind(owner, task.id).run();
       return;
@@ -99,9 +100,10 @@ async function readAll(db: D1Database, owner: string) {
     "SELECT id, source, content_type, raw_input, captured_at, processed_at FROM episodes WHERE owner_id = ? ORDER BY captured_at DESC LIMIT 30",
     "SELECT * FROM inbox_items WHERE owner_id = ? ORDER BY created_at DESC",
     "SELECT * FROM focus_sessions WHERE owner_id = ? ORDER BY started_at DESC LIMIT 100",
+    "SELECT * FROM task_history WHERE owner_id = ? ORDER BY created_at DESC LIMIT 500",
   ];
   const results = await Promise.all(queries.map((query) => db.prepare(query).bind(owner).all()));
-  return { projects: results[0].results, tasks: results[1].results, notes: results[2].results, noteLinks: results[3].results, taskNoteLinks: results[4].results, relations: relationRows.results, episodes: results[5].results, inbox: results[6].results, focusSessions: results[7].results };
+  return { projects: results[0].results, tasks: results[1].results, notes: results[2].results, noteLinks: results[3].results, taskNoteLinks: results[4].results, relations: relationRows.results, episodes: results[5].results, inbox: results[6].results, focusSessions: results[7].results, taskHistory: results[8].results };
 }
 
 const defaults = {
@@ -179,15 +181,48 @@ export async function POST(request: Request) {
     const body = await request.json() as { action?: string; entity?: Entity; id?: string; payload?: Data };
     const db = getRawDb(), at = stamp(), p = body.payload || {};
     await ensureInboxSchema(db);
-    await ensureGraphitiSchema(db);
+      await ensureGraphitiSchema(db);
     await migrateLegacyRelations(db, owner);
+    if (body.action === "updateTask" && body.id) {
+      const previous = await db.prepare("SELECT * FROM tasks WHERE id = ? AND owner_id = ? AND deleted_at IS NULL").bind(body.id, owner).first<Record<string, unknown>>();
+      if (!previous) return Response.json({ error: "Không tìm thấy công việc." }, { status: 404 });
+      const fields: Record<string,string> = { title:"title", priority:"priority", status:"status", projectId:"project_id", plannedDate:"planned_date", dueAt:"due_at" };
+      const entries = Object.entries(p);
+      if (!entries.length || entries.some(([key]) => !fields[key])) return Response.json({ error: "Thuộc tính công việc không hợp lệ." }, { status: 400 });
+      if ("title" in p && !clean(p.title)) return Response.json({ error: "Tên công việc không được để trống." }, { status: 400 });
+      if ("status" in p && !["todo","doing","done"].includes(String(p.status))) return Response.json({ error: "Trạng thái không hợp lệ." }, { status: 400 });
+      if ("priority" in p && !["Cao","Vừa","Thấp"].includes(String(p.priority))) return Response.json({ error: "Ưu tiên không hợp lệ." }, { status: 400 });
+      if (p.plannedDate && (typeof p.plannedDate !== "string" || !validDay(p.plannedDate))) return Response.json({ error: "Ngày dự kiến không hợp lệ." }, { status: 400 });
+      if (p.dueAt && (typeof p.dueAt !== "string" || !validDay(p.dueAt.slice(0,10)) || !Number.isFinite(Date.parse(p.dueAt)))) return Response.json({ error: "Hạn hoàn thành không hợp lệ." }, { status: 400 });
+      if (p.projectId) {
+        const project = await db.prepare("SELECT id FROM projects WHERE id = ? AND owner_id = ? AND deleted_at IS NULL").bind(p.projectId,owner).first();
+        if (!project) return Response.json({ error: "Dự án không tồn tại trong không gian của anh." }, { status: 400 });
+      }
+      const values = entries.map(([key,value]) => ["plannedDate","dueAt","projectId"].includes(key) ? optional(value) : clean(value));
+      const guard = p.status === "doing" ? " AND (status = 'doing' OR (SELECT COUNT(*) FROM tasks WHERE owner_id = ? AND status = 'doing' AND deleted_at IS NULL) < 3)" : "";
+      const bind = [...values,at,body.id,owner,...(p.status === "doing" ? [owner] : [])];
+      const saved = await db.prepare(`UPDATE tasks SET ${entries.map(([key]) => fields[key]+" = ?").join(", ")}, updated_at = ? WHERE id = ? AND owner_id = ? AND deleted_at IS NULL${guard}`).bind(...bind).run();
+      if (!saved.meta.changes) return Response.json({ error: "Đang đủ 3 việc. Hoàn thành hoặc tạm dừng một việc trước." }, { status: 409 });
+      const next = { ...previous, ...Object.fromEntries(entries.map(([key],i) => [fields[key],values[i]])) };
+      if ("projectId" in p) await syncProjectMembership(db,owner,body.id,"task",next.project_id as string | null);
+      if ("dueAt" in p || "status" in p || "title" in p) await syncTaskToGoogle(db,owner,{id:body.id,title:String(next.title),description:String(next.description||""),dueAt:next.due_at as string|null,status:String(next.status)});
+      return Response.json(await readAll(db,owner));
+    }
     if (body.action === "bootstrap") await bootstrap(db, owner, p);
     else if (body.action === "upsert" && body.entity === "project") {
       await db.prepare("INSERT INTO projects (id, owner_id, name, area, color, goal, due_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, area=excluded.area, color=excluded.color, goal=excluded.goal, due_date=excluded.due_date, updated_at=excluded.updated_at WHERE owner_id=excluded.owner_id").bind(body.id || uid(), owner, clean(p.name, "Dự án mới"), clean(p.area, "Cá nhân"), clean(p.color, "blue"), clean(p.goal), optional(p.dueDate), at, at).run();
     } else if (body.action === "upsert" && body.entity === "task") {
       const taskId = body.id || uid();
+      const previous = await db.prepare("SELECT status, planned_date, completed_at FROM tasks WHERE id = ? AND owner_id = ?").bind(taskId, owner).first<{ status: string; planned_date: string | null; completed_at: string | null }>();
+      const planned = Object.hasOwn(p, "plannedDate") ? optional(p.plannedDate) : previous?.planned_date || null;
+      const status = clean(p.status, "todo");
+      if (!["todo", "doing", "done"].includes(status) || (planned && !validDay(planned))) return Response.json({ error: "Trạng thái hoặc ngày dự kiến không hợp lệ." }, { status: 400 });
+      const completedAt = status === "done" ? previous?.completed_at || (previous?.status !== "done" ? at : null) : null;
       const episodeId = await recordEpisode(db, owner, { source: "web", contentType: "text", rawInput: JSON.stringify({ title: p.title, description: p.description, dueAt: p.dueAt, status: p.status }), metadata: { entity: "task", entityId: taskId } });
-      await db.prepare("INSERT INTO tasks (id, owner_id, project_id, title, description, status, priority, due_at, position, checklist, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id, title=excluded.title, description=excluded.description, status=excluded.status, priority=excluded.priority, due_at=excluded.due_at, position=excluded.position, checklist=excluded.checklist, updated_at=excluded.updated_at WHERE owner_id=excluded.owner_id").bind(taskId, owner, optional(p.projectId), clean(p.title, "Công việc mới"), clean(p.description), clean(p.status, "todo"), clean(p.priority, "Vừa"), optional(p.dueAt), Number(p.position || 0), encode(p.checklist), at, at).run();
+      const taskSave = await db.prepare("INSERT INTO tasks (id, owner_id, project_id, title, description, status, priority, due_at, position, checklist, created_at, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE (? <> 'doing' OR (SELECT COUNT(*) FROM tasks WHERE owner_id = ? AND status = 'doing' AND deleted_at IS NULL) < 3 OR EXISTS (SELECT 1 FROM tasks WHERE id = ? AND owner_id = ? AND status = 'doing')) ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id, title=excluded.title, description=excluded.description, status=excluded.status, priority=excluded.priority, due_at=excluded.due_at, position=excluded.position, checklist=excluded.checklist, updated_at=excluded.updated_at WHERE owner_id=excluded.owner_id").bind(taskId, owner, optional(p.projectId), clean(p.title, "Công việc mới"), clean(p.description), clean(p.status, "todo"), clean(p.priority, "Vừa"), optional(p.dueAt), Number(p.position || 0), encode(p.checklist), at, at, status, owner, taskId, owner).run();
+      if (!taskSave.meta.changes) return Response.json({ error: "Đang đủ 3 việc. Hoàn thành hoặc tạm dừng một việc trước." }, { status: 409 });
+      const changes = [db.prepare("UPDATE tasks SET planned_date = ?, completed_at = ? WHERE id = ? AND owner_id = ?").bind(planned, completedAt, taskId, owner)];
+      await db.batch(changes);
       await syncProjectMembership(db, owner, taskId, "task", optional(p.projectId));
       await db.prepare("UPDATE relations SET source_episode_id = ?, confidence = ?, valid_from = COALESCE(valid_from, ?), status = 'active' WHERE owner_id = ? AND target_id = ? AND target_type = 'task' AND deleted_at IS NULL").bind(episodeId, 1, at, owner, taskId).run();
       await syncTaskToGoogle(db, owner, { id: taskId, title: clean(p.title, "Công việc mới"), description: clean(p.description), dueAt: optional(p.dueAt), status: clean(p.status, "todo") });

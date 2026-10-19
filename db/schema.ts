@@ -18,8 +18,13 @@ export const tasks = sqliteTable("tasks", {
   title: text("title").notNull(), description: text("description").notNull().default(""),
   status: text("status", { enum: ["todo", "doing", "done"] }).notNull().default("todo"),
   priority: text("priority", { enum: ["Cao", "Vừa", "Thấp"] }).notNull().default("Vừa"),
-  dueAt: text("due_at"), position: integer("position").notNull().default(0), checklist: text("checklist").notNull().default("[]"), ...timestamps,
+  plannedDate: text("planned_date"), completedAt: text("completed_at"), dueAt: text("due_at"), position: integer("position").notNull().default(0), checklist: text("checklist").notNull().default("[]"), ...timestamps,
 }, (table) => [index("idx_tasks_owner_status_deleted").on(table.ownerId, table.status, table.deletedAt), index("idx_tasks_project").on(table.projectId)]);
+
+export const taskHistory = sqliteTable("task_history", {
+  id: text("id").primaryKey(), ownerId: text("owner_id").notNull(), taskId: text("task_id").notNull(),
+  field: text("field").notNull(), oldValue: text("old_value"), newValue: text("new_value"), createdAt: text("created_at").notNull(),
+});
 
 export const notes = sqliteTable("notes", {
   id: text("id").primaryKey(), ownerId: text("owner_id").notNull(), projectId: text("project_id").references(() => projects.id),

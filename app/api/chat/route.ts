@@ -2,6 +2,7 @@ import { getRawDb } from "../../../db";
 import { getChatGPTUser } from "../../chatgpt-auth";
 import { selectKnowledge, knowledgePrompt, type KnowledgeNote } from "../../lib/knowledge";
 import { callGemini } from "../../lib/gemini";
+import { answerTaskQuery, taskQueryIntent } from "../../lib/task-assistant";
 
 const providers: Record<string, { key: string; baseKey: string; modelKey: string; defaultBase: string; defaultModel: string }> = {
   codex: { key: "OPENAI_API_KEY", baseKey: "OPENAI_BASE_URL", modelKey: "OPENAI_MODEL", defaultBase: "https://api.openai.com/v1", defaultModel: "gpt-4o-mini" },
@@ -20,6 +21,16 @@ export async function POST(request: Request) {
     if (!provider) return Response.json({ error: "LLM không được hỗ trợ." }, { status: 400 });
     const message = typeof body.message === "string" ? body.message.trim() : "";
     if (!message) return Response.json({ error: "Hãy nhập một tin nhắn." }, { status: 400 });
+    const taskQuery = !body.attachment ? taskQueryIntent(message) : null;
+    if (taskQuery) {
+      const user = await getChatGPTUser();
+      const owner = user?.userId || (process.env.NODE_ENV !== "production" ? "local-preview" : null);
+      if (!owner) return Response.json({ error: "Hãy đăng nhập để xem công việc của bạn." }, { status: 401 });
+      try {
+        const reply = await answerTaskQuery(getRawDb(), owner, taskQuery);
+        return Response.json({ reply, provider: "flowdesk", source: "tasks", sources: [] });
+      } catch { return Response.json({ error: "Không đọc được dữ liệu công việc từ Flowdesk lúc này. Hãy thử lại sau." }, { status: 503 }); }
+    }
     let context = "";
     let sources: Array<{ id: string; title: string; excerpt: string }> = [];
     if (body.useKnowledge) {

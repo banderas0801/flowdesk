@@ -1,0 +1,38 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+const ts = require("typescript");
+function load(file, overrides={}) {
+  const output = ts.transpileModule(fs.readFileSync(file,"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022}}).outputText;
+  const mod={exports:{}};
+  vm.runInNewContext(output,{exports:mod.exports,module:mod,require:name=>overrides[name]||require(name),console,Date,Intl,setTimeout});
+  return mod.exports;
+}
+const m=load("components/flowdesk/task-model.ts");
+const task=(patch={})=>({id:"t",title:"Công việc",description:"",status:"todo",priority:"Vừa",project_id:null,due_at:null,planned_date:null,completed_at:null,checklist:"[]",...patch});
+assert.equal(m.dayKey(new Date("2026-10-12T18:00:00Z")),"2026-10-13");
+assert.equal(m.dueDay("2026-10-12T18:00:00Z"),"2026-10-13");
+assert.equal(m.dueDay("2026-10-13T09:00"),"2026-10-13");
+assert.equal(m.weekStart("2026-10-18"),"2026-10-12");
+assert.equal(m.weekStart("2026-10-19"),"2026-10-19");
+assert.equal(m.shiftDay("2026-12-31",1),"2027-01-01");
+assert.equal(m.shiftDay("2028-02-28",1),"2028-02-29");
+assert.equal(m.validDay("2026-02-30"),false);
+assert.equal(m.validDay("2028-02-29"),true);
+assert.equal(m.taskDate(task({due_at:"2026-10-13"}),"planned"),null);
+assert.equal(m.planDay(task({due_at:"2026-10-13",planned_date:"2026-10-12"})),"2026-10-12");
+assert.equal(m.isOverdue(task({due_at:"2026-10-13"}),new Date("2026-10-13T14:00:00Z")),false);
+assert.equal(m.isOverdue(task({due_at:"2026-10-13T08:00"}),new Date("2026-10-13T02:00:00Z")),true);
+assert.equal(m.isOverdue(task({status:"done",due_at:"2026-10-12"}),new Date("2026-10-13")),false);
+assert.equal(m.dueOnDay(task({due_at:"2026-10-12T18:30:00Z"}),"2026-10-20"),"2026-10-20T01:30+07:00");
+const days=m.monthDays("2026-10-13");
+assert.equal(days[0],"2026-09-28");assert.equal(days.at(-1),"2026-11-01");assert.equal(days.length,35);
+const items=[task({id:"low",priority:"Thấp"}),task({id:"high",priority:"Cao"})];
+assert.equal(m.sortTasks(items,"priority")[0].id,"high");assert.equal(items[0].id,"low");
+const {TaskWorkbench}=load("components/flowdesk/task-workbench.tsx",{"./task-model":m});
+const React=require("react"),{renderToStaticMarkup}=require("react-dom/server");
+const html=renderToStaticMarkup(React.createElement(TaskWorkbench,{tasks:[task({planned_date:m.dayKey(),title:"Kiểm tra lịch"})],projects:[],projectName:()=>"Cá nhân",onUpdate:async()=>{},onOpen:()=>{},onAdd:()=>{},initialView:"calendar"}));
+for(const text of ["Tháng","Tuần","LỊCH TRONG NGÀY","Kiểm tra lịch","Ngày dự kiến","Hạn cuối"])assert.ok(html.includes(text),text);
+assert.ok(html.includes('role="checkbox"'));
+assert.ok(html.includes('aria-label="Thuộc tính ngày trên lịch"'));
+console.log("PASS: 21 date, planning, immutability and rendered-calendar checks");

@@ -103,5 +103,7 @@ export async function syncProjectMembership(db: D1Database, owner: string, entit
 
 export async function listRelations(db: D1Database, owner: string) {
   await migrateLegacyRelations(db, owner);
-  return db.prepare("SELECT * FROM relations WHERE owner_id = ? AND deleted_at IS NULL ORDER BY created_at ASC").bind(owner).all<RelationRow>();
+  return db.prepare(`SELECT relations.*, episodes.source AS source_label, episodes.raw_input AS source_input, episodes.captured_at AS source_captured_at
+    FROM relations LEFT JOIN episodes ON episodes.id = relations.source_episode_id AND episodes.owner_id = relations.owner_id
+    WHERE relations.owner_id = ? AND relations.deleted_at IS NULL ORDER BY relations.created_at ASC`).bind(owner).all<RelationRow & { source_label?: string | null; source_input?: string | null; source_captured_at?: string | null }>();
 }

@@ -1,4 +1,5 @@
 import { telegramIntentReply } from "./telegram-intents";
+import { answerTaskQuery, taskQueryIntent } from "./task-assistant";
 import { callGemini } from "./gemini";
 import { completeEpisode, ensureGraphitiSchema, recordEpisode } from "./graphiti";
 
@@ -56,8 +57,8 @@ export async function ensureInboxSchema(db: D1Database) {
 async function resolveOwner(db: D1Database) {
   const configured = process.env.FLOWDESK_OWNER_ID || process.env.TELEGRAM_OWNER_ID;
   if (configured?.trim()) return configured.trim();
-  const row = await db.prepare("SELECT owner_id FROM projects WHERE deleted_at IS NULL GROUP BY owner_id ORDER BY MIN(created_at) LIMIT 1").first<{ owner_id: string }>();
-  return row?.owner_id || null;
+  const rows = await db.prepare("SELECT owner_id FROM projects WHERE deleted_at IS NULL GROUP BY owner_id LIMIT 2").all<{ owner_id: string }>();
+  return rows.results.length === 1 ? rows.results[0].owner_id : null;
 }
 
 function parseJson(raw: string) {
@@ -157,11 +158,18 @@ async function reject(db: D1Database, owner: string, chatId: number) {
 }
 
 export async function processTelegramText(db: D1Database, chatId: number, text: string, options: { suppliedKey?: string; geminiKey?: string; messageId?: number; contentType?: string; rawInput?: string; media?: { data: string; mimeType: string } } = {}) {
-  await ensureInboxSchema(db);
-  await ensureGraphitiSchema(db);
+  const allowedChatId = process.env.TELEGRAM_CHAT_ID?.trim();
+  if (!allowedChatId || String(chatId) !== allowedChatId) return "Kênh Telegram này chưa được cấp quyền truy cập Flowdesk.";
   const normalized = text.trim();
   const owner = await resolveOwner(db);
-  if (!owner) return "Chưa xác định được chủ sở hữu Flowdesk để lưu Inbox.";
+  if (!owner) return "Chưa xác định được chủ sở hữu Flowdesk. Hãy cấu hình FLOWDESK_OWNER_ID.";
+  const taskQuery = !options.media ? taskQueryIntent(normalized) : null;
+  if (taskQuery) {
+    try { return await answerTaskQuery(db, owner, taskQuery); }
+    catch { console.error("telegram task lookup failed"); return "Không đọc được dữ liệu công việc từ Flowdesk lúc này. Anh thử lại sau nhé; mình chưa kiểm tra được nên không kết luận là không có việc."; }
+  }
+  await ensureInboxSchema(db);
+  await ensureGraphitiSchema(db);
   if (normalized === "/confirm" || normalized.toLowerCase() === "confirm") return confirm(db, owner, chatId);
   if (["/reject", "/cancel", "reject", "hủy", "huỷ"].includes(normalized.toLowerCase())) return reject(db, owner, chatId);
   const deterministic = telegramIntentReply(normalized);
